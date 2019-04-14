@@ -19,6 +19,7 @@ var session = require('express-session');
 var schedule = require('node-schedule');
 var mustacheExpress = require('mustache-express');
 var math = require('math');
+var crypto = require('crypto');
 var chkHeartbeat = require('./scripts/chkHB.js')
 var rpting = require('./scripts/reporting.js')
 var mymqtt = require('./scripts/mqtt.js')
@@ -139,9 +140,18 @@ function authenticate_admin(req, res, username, password) {
 				}
 			}
 			if (userfound) {
+                var password_md5 = crypto.createHash('md5').update(password).digest('hex');
 				let sql2 = 'SELECT password pw, role r FROM admin WHERE username = ?';
 				db.get(sql2, [username], function(err, row) {
-					if (password == row.pw) {
+					if (password_md5 == row.pw) {
+						req.session.authenticated = true;
+						req.session.username = username;
+						req.session.role = row.r;
+						console.log('User & Password Authenticated! '+ req.session.role);
+                        console.log(req.session)
+						//return req.session;
+						//db.close();
+					} else if (password == row.pw) {
 						req.session.authenticated = true;
 						req.session.username = username;
 						req.session.role = row.r;
@@ -205,15 +215,22 @@ function authenticate_user(req, res, username, password) {
 				}
 			}
 			if (userfound) {
+                var password_md5 = crypto.createHash('md5').update(password).digest('hex');
 				let sql = 'SELECT password pw, status act FROM users WHERE username = ?';
 				db.get(sql, [username], function(err, row) {
-					if (password == row.pw) {
+					if (password_md5 == row.pw) {
+						req.session.authenticated = true;
+						req.session.username = username;
+						req.session.actv = row.act;
+						console.log('User & Password Authenticated!');
+						db.close();
+					} else if (password == row.pw) {
 						req.session.authenticated = true;
 						req.session.username = username;
 						req.session.actv = row.act;
 						console.log('User & Password Authenticated');
 						db.close();
-					} else {
+                    } else {
 						req.session.authenticated = false;
 					}
 					if (req.session && req.session.authenticated) {
@@ -1233,6 +1250,14 @@ app.get('/admin_exec', function(req, res) {
 	res.render('admin_execution',{ url: outlet.url, machines: tmpdata, brand: outlet.brand, outlet: outlet.name});
 })
 
+app.get('/update_fw', function(req, res) {
+	res.render('updateFw', { url: outlet.url, brand: outlet.brand, outlet: outlet.name});
+})
+
+app.get('/encrypt_pw', function(req, res) {
+	res.render('encrypt_password',{ url: outlet.url, brand: outlet.brand, outlet: outlet.name});
+})
+
 app.get('/user_exec', function(req, res) {
 	if (req.session && req.session.authenticated) {
 		var tmpdata = []
@@ -1320,7 +1345,8 @@ app.post('/register_user', function(req, res) {
 	});	
 	db.serialize(function() {
 		let sql = 'INSERT INTO users(username, password, status) VALUES(?,?,?)';
-		db.run(sql, [req.body.username, req.body.password, "Inactive"], function(err) {
+        var password_md5 = crypto.createHash('md5').update(req.body.password).digest('hex');
+		db.run(sql, [req.body.username, password_md5, "Inactive"], function(err) {
 			if (err) {
 				return console.error(err.message);
 			}
@@ -1357,9 +1383,11 @@ app.post('/chg_password_user', function(req, res) {
 			//console.log(req.session.username)
 			db.get(sql, [req.session.username], function(err, row) {
 				console.log(row)
-				if(req.body.oripassword == row.pw) {
+                var oripassword_md5 = crypto.createHash('md5').update(req.body.oripassword).digest('hex');
+                var newpassword_md5 = crypto.createHash('md5').update(req.body.newpassword).digest('hex');
+				if(oripassword_md5 == row.pw) {
 					let sql2 = 'UPDATE users SET password = ? WHERE username = ?';
-					db.run(sql2, [req.body.newpassword, req.session.username], function(err) {
+					db.run(sql2, [newpassword_md5, req.session.username], function(err) {
 						if (err) {
 							return console.error(err.message);
 						}
@@ -1388,9 +1416,11 @@ app.post('/chg_password_admin', function(req, res) {
 			//console.log(req.session.username)
 			db.get(sql, [req.session.username], function(err, row) {
 				console.log(row)
-				if(req.body.oripassword == row.pw) {
+                var oripassword_md5 = crypto.createHash('md5').update(req.body.oripassword).digest('hex');
+                var newpassword_md5 = crypto.createHash('md5').update(req.body.newpassword).digest('hex');
+				if(oripassword_md5 == row.pw) {
 					let sql2 = 'UPDATE admin SET password = ? WHERE username = ?';
-					db.run(sql2, [req.body.newpassword, req.session.username], function(err) {
+					db.run(sql2, [newpassword_md5, req.session.username], function(err) {
 						if (err) {
 							return console.error(err.message);
 						}
@@ -1400,6 +1430,65 @@ app.post('/chg_password_admin', function(req, res) {
 					res.render('response', {text: "The original password key in is incorrect!"});
 				}
 			})
+		})
+	} else {
+		res.redirect('/');
+	}
+})
+
+app.post('/encrypt_pw_md5', function(req, res) {
+	if (req.session && req.session.authenticated){
+		let db = new sqlite3.Database('./mydb/laundry.db', sqlite3.OPEN_READWRITE, (err) => {
+			if (err) {
+				console.error(err.message);
+			}
+			console.log('Connected to the laundry database.');
+		});	
+		db.serialize(function() {
+			let sql = 'SELECT * FROM users';
+            let sql_admin = 'SELECT * FROM admin';
+			//console.log(req.session.username)
+			db.all(sql, function(err, rows) {
+                rows.forEach(function(row){
+                    //console.log(row);
+                    if(row.password.length != 32){
+                        var username = row.username;
+                        var password = row.password;
+                        var password_md5 = crypto.createHash('md5').update(password).digest('hex');
+                        
+                        let sql2 = 'UPDATE users SET password = ? WHERE username = ?';
+                        db.run(sql2, [password_md5, username], function(err) {
+                            if (err) {
+                                return console.error(err.message);
+                            }
+                        })
+                    } else{
+                        console.log("skip");
+                    }
+                });
+                console.log("Password Encryped!");
+			})
+            db.all(sql_admin, function(err, rows) {
+                rows.forEach(function(row){
+                    //console.log(row);
+                    if(row.password.length != 32){
+                        var username = row.username;
+                        var password = row.password;
+                        var password_md5 = crypto.createHash('md5').update(password).digest('hex');
+                        
+                        let sql_admin2 = 'UPDATE admin SET password = ? WHERE username = ?';
+                        db.run(sql_admin2, [password_md5, username], function(err) {
+                            if (err) {
+                                return console.error(err.message);
+                            }
+                        })
+                    } else{
+                        console.log("skip");
+                    }
+                });
+                console.log("Password Encryped!");
+			})
+            res.redirect('update_fw');
 		})
 	} else {
 		res.redirect('/');
